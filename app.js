@@ -82,10 +82,10 @@ const LEVELS = ["A1", "A2", "B1", "B2", "C1"];
 const SCENARIOS = {
   free: {
     icon: "💬",
-    persona: "Chat freely about everyday topics the learner likes. Ask one follow-up question at a time and recycle useful vocabulary.",
+    persona: "A long, genuine conversation about the current topic, full of interesting ideas, useful vocabulary and open questions.",
     hello: {
-      en: "Hi! I'm Parlio, your robot tutor 🤖 What would you like to talk about today?",
-      fr: "Salut ! Je suis Parlio, ton tuteur robot 🤖 De quoi as-tu envie de parler aujourd'hui ?",
+      en: "Hi! I'm Parlio, your robot conversation partner 🤖 Shall I surprise you with a topic 🎲, or do you have one in mind ✍️? You can also just tell me what's on your mind!",
+      fr: "Salut ! Je suis Parlio, ton partenaire de conversation robot 🤖 Je te propose un sujet surprise 🎲, ou tu as une idée en tête ✍️ ? Tu peux aussi simplement me dire ce qui t'intéresse !",
     },
   },
   cafe: {
@@ -540,19 +540,43 @@ function currentScenario() {
   return SCENARIOS[id] ? id : "free";
 }
 
+function currentTopic() {
+  return state.topic?.[state.target] || "";
+}
+
+function setTopic(topic) {
+  if (!state.topic) state.topic = { en: "", fr: "" };
+  state.topic[state.target] = topic;
+}
+
 function chatSystemPrompt(scenarioId) {
   const sc = SCENARIOS[scenarioId] || SCENARIOS.free;
   const lang = LANG[state.target].name;
-  const explainIn = nativeLanguageName(state.ui);
+  const native = nativeLanguageName(state.ui);
+  const topic = currentTopic();
+  const isConversation = scenarioId === "free";
   return [
-    "You are Parlio, a friendly and encouraging robot language tutor.",
-    `Current activity: ${sc.persona}`,
-    `The learner is practising ${lang} at CEFR level ${state.level}.`,
-    `Always reply in ${lang}, using vocabulary and grammar suited to level ${state.level}.`,
-    "Keep each reply short (2 to 4 sentences) and end with a question that keeps the conversation going.",
-    `If the learner's last message contains mistakes in ${lang}, add at the end a line that starts with "✏️" and gives the corrected sentence, then on the next line a very short explanation in ${explainIn}. If there are no mistakes, do not add that line.`,
-    `The learner's native language is ${explainIn}. If they write in ${explainIn} or another language, help them say it in ${lang}.`,
-    "Never use markdown headings or lists. Plain sentences only; **bold** is allowed for key words.",
+    "You are Parlio, a warm, curious and motivating robot conversation partner and language tutor.",
+    `The learner is practising ${lang} at CEFR level ${state.level}. Their native language is ${native}.`,
+    "Goal: long, genuine, interactive conversations that help the learner learn a lot of vocabulary, express themselves orally and in writing, discover new ideas, and build sentences more naturally.",
+    isConversation
+      ? `Current topic: ${topic ? `"${topic}"` : "none yet — if the learner has not chosen one, propose an interesting topic or follow what they say"}.`
+      : `Current activity (role-play, stay in character): ${sc.persona}`,
+    "",
+    "How to reply each turn:",
+    `- Write in ${lang}, adapted to level ${state.level} (slightly above it to help the learner grow).`,
+    "- React genuinely and specifically to what the learner said, then add something of your own: an interesting idea, fact, opinion, personal-style anecdote or cultural detail related to the topic (3 to 6 sentences).",
+    "- End with ONE open question that invites a developed answer (why, how, what would you do, tell me about…). Never ask yes/no questions only.",
+    "- Encourage longer and richer answers: sometimes suggest a useful expression the learner could use in their next answer.",
+    "- Keep the conversation going. When the topic runs dry, smoothly move to a related new angle.",
+    `- If the learner writes in ${native} or mixes languages, help them say it in ${lang} and continue.`,
+    "",
+    "After your reply, add these optional lines, each on its own line, in exactly this order and format:",
+    `✏️ <the learner's last message, corrected>  — only if it contains mistakes; then on the next line a very short explanation in ${native}.`,
+    `💡 <a more natural way a native speaker would say what the learner said>  — only if their message was understandable but could sound more natural.`,
+    `📚 <useful word or expression from your reply> — <short meaning in ${native}>  — one or two such lines, choosing vocabulary worth learning at level ${state.level}.`,
+    `When you start a new topic, the very first line of your message must be: 🧭 <topic name in ${native}>`,
+    "Plain text only (no headings, no bullet lists besides the lines above). **bold** is allowed for key words.",
   ].join("\n");
 }
 
@@ -575,10 +599,49 @@ function toPayload(messages) {
   return out;
 }
 
-/** Partie principale d'un message de l'IA (sans la ligne de correction ✏️). */
+/**
+ * Découpe une réponse du tuteur : sujet (🧭), texte principal, correction (✏️),
+ * version plus naturelle (💡) et nouveaux mots (📚).
+ */
+function parseAI(text) {
+  const out = { topic: "", main: [], correction: [], natural: "", vocab: [] };
+  let mode = "main";
+  for (const raw of String(text).split("\n")) {
+    const l = raw.trim();
+    if (l.startsWith("🧭")) {
+      out.topic = l.replace(/^🧭\s*/, "").replace(/\*\*/g, "").trim();
+      continue;
+    }
+    if (l.startsWith("✏️")) {
+      mode = "corr";
+      out.correction.push(l);
+      continue;
+    }
+    if (l.startsWith("💡")) {
+      mode = "nat";
+      out.natural = l.replace(/^💡\s*/, "").trim();
+      continue;
+    }
+    if (l.startsWith("📚")) {
+      mode = "voc";
+      const body = l.replace(/^📚\s*/, "");
+      const [word, ...rest] = body.split(/\s+[—–-]\s+/);
+      const w = word.replace(/\*\*/g, "").trim();
+      if (w) out.vocab.push({ word: w, meaning: rest.join(" — ").trim() });
+      continue;
+    }
+    if (mode === "corr") {
+      if (l) out.correction.push(l);
+      continue;
+    }
+    if (mode === "main") out.main.push(raw);
+  }
+  return { ...out, main: out.main.join("\n").trim(), correction: out.correction.join("\n") };
+}
+
+/** Partie principale d'un message du tuteur (sans sujet, correction, etc.). */
 function mainPart(text) {
-  const idx = text.indexOf("✏️");
-  return (idx >= 0 ? text.slice(0, idx) : text).trim();
+  return parseAI(text).main;
 }
 
 /** Traduit un texte de la langue apprise vers la langue maternelle. */
@@ -600,7 +663,8 @@ async function translateInto(m, box, btn) {
     return;
   }
   const out = el("div", { class: "translation-box", dir: "auto" });
-  box.append(out);
+  const tools = box.querySelector(".tools");
+  tools ? box.insertBefore(out, tools) : box.append(out);
   btn.setAttribute("aria-pressed", "true");
   if (m.translation && m.translationLang === state.ui) {
     out.append(el("span", { class: "translation-label" }, `🌐 ${t("translation_label")}`), el("span", {}, richText(m.translation)));
@@ -627,7 +691,20 @@ async function translateInto(m, box, btn) {
   }
 }
 
+/** Ajoute les nouveaux mots au carnet de vocabulaire. Retourne le nombre ajouté. */
+function learnWords(vocab) {
+  const words = state.progress.words[state.target];
+  let added = 0;
+  for (const v of vocab) {
+    if (!v.word || words.some((x) => x.word.toLowerCase() === v.word.toLowerCase())) continue;
+    words.push({ word: v.word, translation: v.meaning || "" });
+    added += 1;
+  }
+  return added;
+}
+
 function renderMessage(m, onSpeak) {
+  if (m.hidden) return null;
   const isAI = m.role === "assistant";
   const box = el("div", { class: `msg ${isAI ? "ai" : "me"}` });
   fillMessage(box, m.content, isAI, onSpeak, false, m);
@@ -636,28 +713,64 @@ function renderMessage(m, onSpeak) {
 
 function fillMessage(box, text, isAI, onSpeak, typing = false, msg = null) {
   box.replaceChildren();
-  const main = isAI ? mainPart(text) : text;
-  const idx = isAI ? text.indexOf("✏️") : -1;
-  const correction = idx >= 0 ? text.slice(idx).trim() : "";
   box.setAttribute("dir", "auto");
-  const body = el("span", { class: typing ? "typing" : "", dir: "auto" }, richText(main));
-  box.append(body);
-  if (correction) {
-    // Phrase corrigée (langue apprise) et explication (langue maternelle) sur deux lignes,
-    // chacune dans son propre sens d'écriture.
-    const m = correction.match(/^([\s\S]*?)(?:\s+[—–-]\s+|\n+)([\s\S]+)$/);
-    const fixed = m ? m[1] : correction;
-    const why = m ? m[2] : "";
+  if (!isAI) {
+    box.append(el("span", { dir: "auto" }, richText(text)));
+    return;
+  }
+  const p = parseAI(text);
+  if (p.topic) box.append(el("div", { class: "topic-tag", dir: "auto" }, `🧭 ${p.topic}`));
+  box.append(el("span", { class: typing ? "typing" : "", dir: "auto" }, richText(p.main)));
+
+  if (p.correction) {
+    // Phrase corrigée (langue apprise) et explication (langue maternelle), chacune dans son sens.
+    const lines = p.correction.split("\n");
+    let fixed = lines[0];
+    let why = lines.slice(1).join(" ");
+    if (!why) {
+      const m = fixed.match(/^([\s\S]*?)\s+[—–-]\s+([\s\S]+)$/);
+      if (m) [fixed, why] = [m[1], m[2]];
+    }
     box.append(
       el(
-        "span",
+        "div",
         { class: "correction" },
         el("span", { dir: "ltr", style: "display:block" }, richText(fixed)),
         why ? el("span", { dir: "auto", style: "display:block;margin-top:4px;opacity:.9" }, richText(why)) : null
       )
     );
   }
-  if (isAI && !typing && text) {
+  if (p.natural) {
+    box.append(
+      el(
+        "div",
+        { class: "natural" },
+        el("span", { class: "block-label" }, `💡 ${t("natural_label")}`),
+        el("span", { dir: "ltr", style: "display:block" }, richText(p.natural)),
+        el("button", { type: "button", class: "mini", "aria-label": t("listen"), onclick: () => onSpeak(p.natural) }, "🔊")
+      )
+    );
+  }
+  if (p.vocab.length) {
+    box.append(
+      el(
+        "div",
+        { class: "vocab-cards" },
+        el("span", { class: "block-label" }, `📚 ${t("vocab_label")}`),
+        p.vocab.map((v) =>
+          el(
+            "div",
+            { class: "vocab-card" },
+            el("button", { type: "button", class: "mini", "aria-label": t("listen"), onclick: () => onSpeak(v.word) }, "🔊"),
+            el("b", { dir: "ltr" }, v.word),
+            v.meaning ? el("span", { dir: "auto" }, v.meaning) : null
+          )
+        )
+      )
+    );
+  }
+
+  if (!typing && text) {
     const translateBtn = el(
       "button",
       { type: "button", class: "translate-btn", "aria-pressed": "false", title: t("translate"), "aria-label": t("translate") },
@@ -670,7 +783,7 @@ function fillMessage(box, text, isAI, onSpeak, typing = false, msg = null) {
         "div",
         { class: "tools" },
         translateBtn,
-        el("button", { type: "button", title: t("listen"), "aria-label": t("listen"), onclick: () => onSpeak(main) }, "🔊"),
+        el("button", { type: "button", title: t("listen"), "aria-label": t("listen"), onclick: () => onSpeak(p.main) }, "🔊"),
         el(
           "button",
           {
@@ -679,7 +792,7 @@ function fillMessage(box, text, isAI, onSpeak, typing = false, msg = null) {
             "aria-label": t("copy"),
             onclick: async () => {
               try {
-                await navigator.clipboard.writeText(main);
+                await navigator.clipboard.writeText(p.main);
                 toast(t("copied"));
               } catch {
                 /* presse-papiers indisponible */
@@ -708,6 +821,7 @@ function renderChat(view) {
       "aria-label": t("new_chat"),
       onclick: () => {
         state.chats[state.target].bot = [];
+        setTopic("");
         save();
         go("chat");
       },
@@ -760,10 +874,61 @@ function renderChat(view) {
     )
   );
 
+  /* ---------- Choix du sujet (mode Conversation) ---------- */
+  const topicInput = el("input", { type: "text", dir: "auto", placeholder: t("topic_ph"), "aria-label": t("topic_mine") });
+  const picker = el(
+    "div",
+    { class: "topic-picker", hidden: true },
+    el(
+      "div",
+      { class: "row" },
+      el("div", { class: "grow" }, topicInput),
+      el("button", { class: "btn small", type: "button", onclick: () => topicInput.value.trim() && startTopic(topicInput.value.trim()) }, t("topic_go"))
+    ),
+    el(
+      "div",
+      { class: "topic-ideas" },
+      t("topic_ideas")
+        .split("|")
+        .map((idea) => el("button", { type: "button", class: "chip small", onclick: () => startTopic(idea.replace(/^\S+\s/, "")) }, idea))
+    )
+  );
+  topicInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && topicInput.value.trim()) startTopic(topicInput.value.trim());
+  });
+
+  const topicNow = el("b", {}, currentTopic() || t("topic_any"));
+  const topicBar =
+    scenarioId === "free"
+      ? el(
+          "div",
+          { class: "topic-bar" },
+          el("div", { class: "topic-now", dir: "auto" }, `🧭 ${t("topic_label")} : `, topicNow),
+          el(
+            "div",
+            { class: "row" },
+            el("button", { type: "button", class: "chip small accent", onclick: () => startTopic(null) }, `🎲 ${t("topic_surprise")}`),
+            el(
+              "button",
+              {
+                type: "button",
+                class: "chip small",
+                onclick: () => {
+                  picker.hidden = !picker.hidden;
+                  if (!picker.hidden) topicInput.focus();
+                },
+              },
+              `✍️ ${t("topic_mine")}`
+            )
+          ),
+          picker
+        )
+      : null;
+
   const messagesBox = el("div", { class: "messages", "aria-live": "polite" });
   const scrollDown = () => (messagesBox.scrollTop = messagesBox.scrollHeight);
   const redraw = () => {
-    messagesBox.replaceChildren(...history.map((m) => renderMessage(m, speak)));
+    messagesBox.replaceChildren(...history.map((m) => renderMessage(m, speak)).filter(Boolean));
     scrollDown();
   };
 
@@ -795,6 +960,79 @@ function renderChat(view) {
     }
   });
 
+  /** Demande la réponse du tuteur pour l'historique actuel. */
+  async function askAI({ restoreInput = "" } = {}) {
+    const aiBox = el("div", { class: "msg ai" });
+    fillMessage(aiBox, "", true, speak, true);
+    messagesBox.append(el("div", { class: "msg-row ai" }, robotAvatar(34, "thinking"), aiBox));
+    scrollDown();
+
+    chatAbort = new AbortController();
+    sendBtn.textContent = t("stop");
+    // Les 40 derniers messages : assez pour une longue discussion, sans exploser le coût.
+    const recent = history.slice(-40);
+    const firstUser = recent.findIndex((m) => m.role === "user");
+    const payload = toPayload(recent.slice(Math.max(firstUser, 0)));
+    try {
+      const reply = await streamChat(aiConfig(), {
+        system: chatSystemPrompt(scenarioId),
+        messages: payload,
+        signal: chatAbort.signal,
+        onRetry,
+        onText: (full) => {
+          fillMessage(aiBox, full, true, speak, true);
+          scrollDown();
+        },
+      });
+      const parsed = parseAI(reply || "");
+      if (parsed.topic && scenarioId === "free") setTopic(parsed.topic);
+      history.push({ role: "assistant", content: reply || "…" });
+      if (history.length > 240) history.splice(1, history.length - 240);
+      const added = learnWords(parsed.vocab);
+      save();
+      addXP(2 + added);
+      if (added) setTimeout(() => toast(t("words_added", { n: added })), 1200);
+      return true;
+    } catch (e) {
+      if (e.name === "AbortError") {
+        const partial = aiBox.textContent.trim();
+        if (partial) history.push({ role: "assistant", content: partial });
+      } else {
+        history.pop(); // retire la demande non traitée pour pouvoir la renvoyer
+        if (restoreInput) input.value = restoreInput;
+        showError(e);
+      }
+      save();
+      return false;
+    } finally {
+      chatAbort = null;
+      sendBtn.textContent = t("send");
+      topicNow.textContent = currentTopic() || t("topic_any");
+      redraw();
+    }
+  }
+
+  /** Lance un nouveau sujet : celui de l'utilisateur, ou une surprise (topic = null). */
+  async function startTopic(topic) {
+    if (chatAbort) return;
+    if (!hasKey()) {
+      toast(t("need_key"));
+      return;
+    }
+    picker.hidden = true;
+    setTopic(topic || "");
+    history.push({
+      role: "user",
+      hidden: true,
+      content: topic
+        ? `(New topic chosen by the learner: "${topic}". Start the first line with 🧭 and the topic name, then open the conversation with an interesting idea and an open question.)`
+        : "(Surprise me: choose a fresh, interesting topic that will teach me useful vocabulary and new ideas. Start the first line with 🧭 and the topic name, then open the conversation with an interesting idea and an open question.)",
+    });
+    save();
+    redraw();
+    await askAI();
+  }
+
   async function send() {
     if (chatAbort) {
       chatAbort.abort();
@@ -812,49 +1050,7 @@ function renderChat(view) {
     state.progress.messages += 1;
     save();
     redraw();
-
-    const aiBox = el("div", { class: "msg ai" });
-    const thinkingAvatar = robotAvatar(34, "thinking");
-    fillMessage(aiBox, "", true, speak, true);
-    messagesBox.append(el("div", { class: "msg-row ai" }, thinkingAvatar, aiBox));
-    scrollDown();
-
-    chatAbort = new AbortController();
-    sendBtn.textContent = t("stop");
-    // On n'envoie que les 30 derniers messages pour limiter le coût.
-    const recent = history.slice(-30);
-    const firstUser = recent.findIndex((m) => m.role === "user");
-    const payload = toPayload(recent.slice(Math.max(firstUser, 0)));
-    try {
-      const reply = await streamChat(aiConfig(), {
-        system: chatSystemPrompt(scenarioId),
-        messages: payload,
-        signal: chatAbort.signal,
-        onRetry,
-        onText: (full) => {
-          fillMessage(aiBox, full, true, speak, true);
-          scrollDown();
-        },
-      });
-      history.push({ role: "assistant", content: reply || "…" });
-      if (history.length > 200) history.splice(1, history.length - 200);
-      save();
-      addXP(2);
-    } catch (e) {
-      if (e.name === "AbortError") {
-        const partial = aiBox.textContent.trim();
-        if (partial) history.push({ role: "assistant", content: partial });
-      } else {
-        history.pop(); // retire le message non traité pour pouvoir le renvoyer
-        input.value = text;
-        showError(e);
-      }
-      save();
-    } finally {
-      chatAbort = null;
-      sendBtn.textContent = t("send");
-      redraw();
-    }
+    await askAI({ restoreInput: text });
   }
   sendBtn.addEventListener("click", send);
 
@@ -863,7 +1059,8 @@ function renderChat(view) {
     !hasKey() ? keyNotice() : null,
     header,
     scenarios,
-    el("div", { class: "chat-wrap" }, messagesBox, el("div", { class: "composer" }, micBtn, el("div", { class: "grow" }, input), sendBtn))
+    topicBar,
+    el("div", { class: `chat-wrap ${topicBar ? "with-topic" : ""}` }, messagesBox, el("div", { class: "composer" }, micBtn, el("div", { class: "grow" }, input), sendBtn))
   );
   redraw();
 }
@@ -877,6 +1074,20 @@ const CALL_ITEMS = 5;
 function callSystemPrompt(scenarioId) {
   const sc = SCENARIOS[scenarioId] || SCENARIOS.free;
   const lang = LANG[state.target].name;
+  if (scenarioId === "free") {
+    const topic = currentTopic();
+    return [
+      "You are Parlio, a warm, curious and motivating robot conversation partner on a live voice call. Everything you write is read aloud.",
+      `The learner is practising speaking ${lang} at CEFR level ${state.level}.`,
+      `Topic: ${topic ? `"${topic}"` : "choose an interesting topic yourself and announce it in your first sentence"}.`,
+      "Have a long, natural, engaging spoken conversation:",
+      "- React to what the learner says, share an interesting idea, fact or short story, and end every turn with ONE open question that makes them talk.",
+      `- If the learner made a mistake or could say it more naturally, start your turn with "A more natural way to say it: ..." (one sentence), then continue the conversation.`,
+      `- From time to time, teach one useful new word or expression and explain it simply in ${lang}.`,
+      "- When the topic runs dry, move to a related new angle. Never end the call yourself.",
+      `Speak only ${lang}. Two to four short spoken sentences per turn. No emojis, no markdown, no lists, no stage directions.`,
+    ].join("\n");
+  }
   return [
     "You are Parlio, a friendly robot language tutor on a live voice call. Everything you write is read aloud.",
     `The learner is practising ${lang} at CEFR level ${state.level}. Context: ${sc.persona}`,
@@ -910,7 +1121,15 @@ async function startCall() {
     paused: false,
     abort: null,
     started: Date.now(),
-    turns: [{ role: "user", content: `(The call starts now. Greet me in one short sentence and give the first situation.)` }],
+    turns: [
+      {
+        role: "user",
+        content:
+          scenarioId === "free"
+            ? `(The call starts now. Greet me in one short sentence, then start talking about ${currentTopic() ? `"${currentTopic()}"` : "an interesting topic you choose"} and ask me an open question.)`
+            : "(The call starts now. Greet me in one short sentence and give the first situation.)",
+      },
+    ],
     transcript: [],
     lastTutor: "",
     timer: null,

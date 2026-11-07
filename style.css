@@ -474,6 +474,43 @@ body.onboarding main { padding-bottom: 32px; }
 .translation-label { display: block; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 2px; }
 .chat-wrap { height: calc(100dvh - 330px - env(safe-area-inset-bottom) - env(safe-area-inset-top)); }
 
+/* ---------- Conversation : sujet, plus naturel, nouveaux mots ---------- */
+.topic-bar {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  padding: 8px 10px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 6px;
+}
+.topic-bar > .row { gap: 6px; }
+.topic-now { font-size: 14px; color: var(--muted); }
+.topic-now b { color: var(--text); }
+.chip.small { padding: 5px 10px; font-size: 13px; }
+.chip.accent { background: linear-gradient(135deg, #7c3aed, #4f46e5); color: #fff; border-color: transparent; }
+.topic-picker { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
+.topic-picker[hidden] { display: none; }
+.topic-ideas { display: flex; flex-wrap: wrap; gap: 6px; }
+.topic-tag {
+  display: inline-block; font-size: 12px; font-weight: 700; color: #7c3aed;
+  background: rgba(124, 58, 237, 0.1); border-radius: 999px; padding: 2px 10px; margin-bottom: 6px;
+}
+.block-label { display: block; font-size: 12px; font-weight: 700; opacity: 0.8; margin-bottom: 2px; }
+.natural {
+  position: relative; margin-top: 8px; padding: 8px 36px 8px 10px; border-radius: 10px;
+  background: rgba(59, 130, 246, 0.1); color: var(--text); border-inline-start: 3px solid #3b82f6; font-size: 15px;
+}
+[dir="rtl"] .natural { padding: 8px 10px 8px 36px; }
+.natural .mini { position: absolute; top: 6px; inset-inline-end: 6px; }
+.vocab-cards { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.vocab-card {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 10px; padding: 6px 10px; font-size: 15px;
+}
+.vocab-card b { color: #b45309; }
+:root[data-theme="dark"] .vocab-card b { color: #fbbf24; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .vocab-card b { color: #fbbf24; } }
+.mini { border: none; background: transparent; font-size: 15px; padding: 0 2px; cursor: pointer; }
+.correction { display: block; }
+.chat-wrap.with-topic { height: calc(100dvh - 400px - env(safe-area-inset-bottom) - env(safe-area-inset-top)); min-height: 280px; }
+
 /* ---------- Appel vocal ---------- */
 .call-btn {
   flex: none; display: inline-flex; align-items: center; gap: 6px;
