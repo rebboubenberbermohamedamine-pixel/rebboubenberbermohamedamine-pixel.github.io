@@ -17,7 +17,7 @@ const DEFAULT_STATE = {
   provider: "gemini",
   keys: { gemini: "", anthropic: "", openai: "" },
   models: {},
-  character: { en: "tutor", fr: "tutor" },
+  scenario: { en: "free", fr: "free" },
   chats: { en: {}, fr: {} },
   progress: { xpByDay: {}, lessons: 0, messages: 0, oralScores: [], words: { en: [], fr: [] } },
 };
@@ -78,36 +78,62 @@ const LANG = {
 };
 const LEVELS = ["A1", "A2", "B1", "B2", "C1"];
 
-const CHARACTERS = {
-  tutor: {
-    emoji: "🧑‍🏫",
-    name: { en: "Emma", fr: "Léa" },
-    role: { fr: "Tutrice bienveillante", en: "Friendly tutor", ar: "معلّمة لطيفة" },
-    persona:
-      "a warm, patient language tutor. Chat about everyday topics the learner likes, ask one follow-up question at a time and recycle useful vocabulary.",
+// Un seul tuteur (le robot Parlio) qui peut jouer plusieurs mises en situation.
+const SCENARIOS = {
+  free: {
+    icon: "💬",
+    persona: "Chat freely about everyday topics the learner likes. Ask one follow-up question at a time and recycle useful vocabulary.",
+    hello: {
+      en: "Hi! I'm Parlio, your robot tutor 🤖 What would you like to talk about today?",
+      fr: "Salut ! Je suis Parlio, ton tuteur robot 🤖 De quoi as-tu envie de parler aujourd'hui ?",
+    },
   },
   cafe: {
-    emoji: "☕",
-    name: { en: "Jake", fr: "Hugo" },
-    role: { fr: "Serveur de café", en: "Café waiter", ar: "نادل في مقهى" },
-    persona:
-      "a waiter in a busy café. Role-play taking the learner's order, suggesting items, answering questions about the menu and handling the bill. Stay in character.",
+    icon: "☕",
+    persona: "Role-play: you are a waiter in a busy café. Take the learner's order, suggest items, answer questions about the menu and handle the bill.",
+    hello: {
+      en: "☕ Let's practise at the café! Good morning, welcome! What can I get you?",
+      fr: "☕ On s'entraîne au café ! Bonjour et bienvenue ! Qu'est-ce que je vous sers ?",
+    },
   },
   interview: {
-    emoji: "💼",
-    name: { en: "Ms. Carter", fr: "Mme Martin" },
-    role: { fr: "Entretien d'embauche", en: "Job interview", ar: "مقابلة عمل" },
-    persona:
-      "a friendly but professional recruiter running a job interview. Ask classic interview questions one at a time and react to the answers. Stay in character.",
+    icon: "💼",
+    persona: "Role-play: you are a friendly but professional recruiter running a job interview. Ask classic interview questions one at a time and react to the answers.",
+    hello: {
+      en: "💼 Let's practise a job interview! Hello, thanks for coming in. Could you introduce yourself?",
+      fr: "💼 On s'entraîne pour un entretien d'embauche ! Bonjour, merci d'être venu. Pouvez-vous vous présenter ?",
+    },
   },
   travel: {
-    emoji: "✈️",
-    name: { en: "Noah", fr: "Inès" },
-    role: { fr: "Voyage et tourisme", en: "Travel & tourism", ar: "السفر والسياحة" },
-    persona:
-      "a local guide helping a tourist: directions, hotel check-in, transport, sightseeing and small problems while travelling. Stay in character.",
+    icon: "✈️",
+    persona: "Role-play: you are a local guide helping a tourist with directions, hotel check-in, transport, sightseeing and small problems while travelling.",
+    hello: {
+      en: "✈️ Let's practise travelling! Welcome to the city! How can I help you today?",
+      fr: "✈️ On s'entraîne en voyage ! Bienvenue dans notre ville ! Comment puis-je vous aider ?",
+    },
   },
 };
+
+// Avatar du robot (SVG statique écrit ici, pas du contenu venant de l'IA).
+const ROBOT_SVG = `<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+<defs><linearGradient id="parlio-rb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#818cf8"/><stop offset="1" stop-color="#4f46e5"/></linearGradient></defs>
+<line x1="32" y1="5" x2="32" y2="14" stroke="#6366f1" stroke-width="3" stroke-linecap="round"/>
+<circle class="rb-antenna" cx="32" cy="6" r="4.5" fill="#2dd4bf"/>
+<rect x="5" y="29" width="6" height="13" rx="3" fill="#4f46e5"/><rect x="53" y="29" width="6" height="13" rx="3" fill="#4f46e5"/>
+<rect x="10" y="14" width="44" height="40" rx="15" fill="url(#parlio-rb)"/>
+<rect x="16" y="22" width="32" height="19" rx="9.5" fill="#12132b"/>
+<g class="rb-eyes"><circle cx="25" cy="31.5" r="4" fill="#5eead4"/><circle cx="39" cy="31.5" r="4" fill="#5eead4"/></g>
+<path d="M25 46.5 q7 5 14 0" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/>
+</svg>`;
+
+function robotAvatar(size = 34, extraClass = "") {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = ROBOT_SVG.trim();
+  const svg = tpl.content.firstChild;
+  svg.setAttribute("width", size);
+  svg.setAttribute("height", size);
+  return el("div", { class: `bot-avatar ${extraClass}`.trim(), "aria-hidden": "true" }, svg);
+}
 
 const TOPICS = {
   grammar: {
@@ -468,12 +494,19 @@ function keyNotice() {
    1. Chat avec le tuteur
    ===================================================================== */
 
-function chatSystemPrompt(charId) {
-  const c = CHARACTERS[charId];
+function currentScenario() {
+  if (!state.scenario) state.scenario = { en: "free", fr: "free" };
+  const id = state.scenario[state.target];
+  return SCENARIOS[id] ? id : "free";
+}
+
+function chatSystemPrompt(scenarioId) {
+  const sc = SCENARIOS[scenarioId] || SCENARIOS.free;
   const lang = LANG[state.target].name;
   const explainIn = nativeLanguageName(state.ui);
   return [
-    `You are ${c.name[state.target]}, ${c.persona}`,
+    "You are Parlio, a friendly and encouraging robot language tutor.",
+    `Current activity: ${sc.persona}`,
     `The learner is practising ${lang} at CEFR level ${state.level}.`,
     `Always reply in ${lang}, using vocabulary and grammar suited to level ${state.level}.`,
     "Keep each reply short (2 to 4 sentences) and end with a question that keeps the conversation going.",
@@ -483,23 +516,83 @@ function chatSystemPrompt(charId) {
   ].join("\n");
 }
 
-function getChat(charId) {
+/** Une seule conversation par langue apprise (le robot change seulement de thème). */
+function getChat() {
   const byLang = state.chats[state.target];
-  if (!byLang[charId]) byLang[charId] = [];
-  return byLang[charId];
+  if (!byLang.bot) byLang.bot = [];
+  return byLang.bot;
+}
+
+/** Messages envoyés à l'IA : rôle + texte seulement, rôles consécutifs fusionnés. */
+function toPayload(messages) {
+  const out = [];
+  for (const m of messages) {
+    const content = m.content;
+    const last = out[out.length - 1];
+    if (last && last.role === m.role) last.content += `\n\n${content}`;
+    else out.push({ role: m.role, content });
+  }
+  return out;
+}
+
+/** Partie principale d'un message de l'IA (sans la ligne de correction ✏️). */
+function mainPart(text) {
+  const idx = text.indexOf("✏️");
+  return (idx >= 0 ? text.slice(0, idx) : text).trim();
+}
+
+/** Traduit un message de l'IA dans la langue maternelle (mis en cache dans le message). */
+async function translateInto(m, box, btn) {
+  const existing = box.querySelector(".translation-box");
+  if (existing) {
+    existing.remove();
+    btn.setAttribute("aria-pressed", "false");
+    return;
+  }
+  const out = el("div", { class: "translation-box", dir: "auto" });
+  box.append(out);
+  btn.setAttribute("aria-pressed", "true");
+  if (m.translation && m.translationLang === state.ui) {
+    out.append(el("span", { class: "translation-label" }, `🌐 ${t("translation_label")}`), el("span", {}, richText(m.translation)));
+    return;
+  }
+  if (!hasKey()) {
+    out.remove();
+    toast(t("need_key"));
+    return;
+  }
+  out.append(el("span", { class: "translation-label" }, `🌐 ${t("translating")}`));
+  const textBox = el("span", { class: "typing" });
+  out.append(textBox);
+  try {
+    const translated = await streamChat(aiConfig(), {
+      system: `You are a translator. Translate the user's ${LANG[state.target].name} text into ${nativeLanguageName(state.ui)}. Keep the meaning and the tone, write naturally and simply, keep **bold** markers, and output only the translation.`,
+      messages: [{ role: "user", content: mainPart(m.content) }],
+      onRetry,
+      onText: (full) => textBox.replaceChildren(richText(full)),
+    });
+    m.translation = translated.trim();
+    m.translationLang = state.ui;
+    save();
+    out.replaceChildren(el("span", { class: "translation-label" }, `🌐 ${t("translation_label")}`), el("span", {}, richText(m.translation)));
+  } catch (e) {
+    out.remove();
+    btn.setAttribute("aria-pressed", "false");
+    showError(e);
+  }
 }
 
 function renderMessage(m, onSpeak) {
   const isAI = m.role === "assistant";
   const box = el("div", { class: `msg ${isAI ? "ai" : "me"}` });
-  fillMessage(box, m.content, isAI, onSpeak);
-  return box;
+  fillMessage(box, m.content, isAI, onSpeak, false, m);
+  return isAI ? el("div", { class: "msg-row ai" }, robotAvatar(34), box) : el("div", { class: "msg-row me" }, box);
 }
 
-function fillMessage(box, text, isAI, onSpeak, typing = false) {
+function fillMessage(box, text, isAI, onSpeak, typing = false, msg = null) {
   box.replaceChildren();
+  const main = isAI ? mainPart(text) : text;
   const idx = isAI ? text.indexOf("✏️") : -1;
-  const main = idx >= 0 ? text.slice(0, idx).trim() : text;
   const correction = idx >= 0 ? text.slice(idx).trim() : "";
   box.setAttribute("dir", "auto");
   const body = el("span", { class: typing ? "typing" : "", dir: "auto" }, richText(main));
@@ -520,11 +613,19 @@ function fillMessage(box, text, isAI, onSpeak, typing = false) {
     );
   }
   if (isAI && !typing && text) {
+    const translateBtn = el(
+      "button",
+      { type: "button", class: "translate-btn", "aria-pressed": "false", title: t("translate"), "aria-label": t("translate") },
+      `🌐 ${t("translate")}`
+    );
+    if (msg) translateBtn.addEventListener("click", () => translateInto(msg, box, translateBtn));
+    else translateBtn.hidden = true;
     box.append(
       el(
         "div",
         { class: "tools" },
-        el("button", { type: "button", title: t("listen"), "aria-label": t("listen"), onclick: () => onSpeak(text) }, "🔊"),
+        translateBtn,
+        el("button", { type: "button", title: t("listen"), "aria-label": t("listen"), onclick: () => onSpeak(main) }, "🔊"),
         el(
           "button",
           {
@@ -548,44 +649,65 @@ function fillMessage(box, text, isAI, onSpeak, typing = false) {
 }
 
 function renderChat(view) {
-  const charId = state.character[state.target] || "tutor";
+  const scenarioId = currentScenario();
+  const history = getChat();
+  const greeting = (id) => ({ role: "assistant", content: SCENARIOS[id].hello[state.target] });
+  if (history.length === 0) history.push(greeting(scenarioId));
 
-  const chars = el(
+  const newChat = el(
+    "button",
+    {
+      class: "icon-btn small",
+      type: "button",
+      title: t("new_chat"),
+      "aria-label": t("new_chat"),
+      onclick: () => {
+        state.chats[state.target].bot = [];
+        save();
+        go("chat");
+      },
+    },
+    "↺"
+  );
+
+  const header = el(
     "div",
-    { class: "chars", role: "tablist" },
-    Object.entries(CHARACTERS).map(([id, c]) =>
+    { class: "bot-header" },
+    robotAvatar(52, "big"),
+    el(
+      "div",
+      { class: "grow" },
+      el("b", { class: "bot-name" }, "Parlio"),
+      el("span", { class: "bot-status" }, el("span", { class: "dot", "aria-hidden": "true" }), t("bot_online")),
+      el("div", { class: "bot-role" }, t("bot_role", { lang: targetName() }))
+    ),
+    newChat
+  );
+
+  const scenarios = el(
+    "div",
+    { class: "scenarios", role: "group", "aria-label": t("scenarios_label") },
+    Object.entries(SCENARIOS).map(([id, sc]) =>
       el(
         "button",
         {
           type: "button",
-          class: `char ${id === charId ? "active" : ""}`,
-          role: "tab",
-          "aria-selected": String(id === charId),
+          class: `chip ${id === scenarioId ? "active" : ""}`,
+          "aria-pressed": String(id === scenarioId),
           onclick: () => {
-            state.character[state.target] = id;
+            if (id === scenarioId) return;
+            state.scenario[state.target] = id;
+            history.push(greeting(id));
             save();
             go("chat");
           },
         },
-        el("b", {}, `${c.emoji} ${c.name[state.target]}`),
-        c.role[state.ui]
+        `${sc.icon} ${t(`scen_${id}`)}`
       )
     )
   );
 
   const messagesBox = el("div", { class: "messages", "aria-live": "polite" });
-  const history = getChat(charId);
-
-  const greet = () => {
-    const c = CHARACTERS[charId];
-    const hello =
-      state.target === "en"
-        ? { tutor: "Hi! I'm Emma. What would you like to talk about today?", cafe: "Good morning! Welcome to the café. What can I get you?", interview: "Hello, thanks for coming in today. Could you start by introducing yourself?", travel: "Hi there! Welcome to the city. How can I help you today?" }
-        : { tutor: "Salut ! Moi, c'est Léa. De quoi as-tu envie de parler aujourd'hui ?", cafe: "Bonjour ! Bienvenue au café. Qu'est-ce que je vous sers ?", interview: "Bonjour, merci d'être venu. Pouvez-vous vous présenter ?", travel: "Bonjour et bienvenue ! Comment puis-je vous aider ?" };
-    return { role: "assistant", content: hello[charId] || `${c.emoji}` };
-  };
-  if (history.length === 0) history.push(greet());
-
   const scrollDown = () => (messagesBox.scrollTop = messagesBox.scrollHeight);
   const redraw = () => {
     messagesBox.replaceChildren(...history.map((m) => renderMessage(m, speak)));
@@ -639,8 +761,9 @@ function renderChat(view) {
     redraw();
 
     const aiBox = el("div", { class: "msg ai" });
+    const thinkingAvatar = robotAvatar(34, "thinking");
     fillMessage(aiBox, "", true, speak, true);
-    messagesBox.append(aiBox);
+    messagesBox.append(el("div", { class: "msg-row ai" }, thinkingAvatar, aiBox));
     scrollDown();
 
     chatAbort = new AbortController();
@@ -648,10 +771,10 @@ function renderChat(view) {
     // On n'envoie que les 30 derniers messages pour limiter le coût.
     const recent = history.slice(-30);
     const firstUser = recent.findIndex((m) => m.role === "user");
-    const payload = recent.slice(Math.max(firstUser, 0));
+    const payload = toPayload(recent.slice(Math.max(firstUser, 0)));
     try {
       const reply = await streamChat(aiConfig(), {
-        system: chatSystemPrompt(charId),
+        system: chatSystemPrompt(scenarioId),
         messages: payload,
         signal: chatAbort.signal,
         onRetry,
@@ -682,24 +805,11 @@ function renderChat(view) {
   }
   sendBtn.addEventListener("click", send);
 
-  const newChat = el(
-    "button",
-    {
-      class: "btn ghost small",
-      type: "button",
-      onclick: () => {
-        state.chats[state.target][charId] = [];
-        save();
-        go("chat");
-      },
-    },
-    `↺ ${t("new_chat")}`
-  );
-
-  mount(view, 
+  mount(
+    view,
     !hasKey() ? keyNotice() : null,
-    chars,
-    el("div", { class: "row", style: "justify-content:flex-end;margin-bottom:4px" }, newChat),
+    header,
+    scenarios,
     el("div", { class: "chat-wrap" }, messagesBox, el("div", { class: "composer" }, micBtn, el("div", { class: "grow" }, input), sendBtn))
   );
   redraw();
