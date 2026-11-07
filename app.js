@@ -1,4 +1,4 @@
-import { PROVIDERS, streamChat, completeJSON, listModels } from "./ai.js";
+import { PROVIDERS, streamChat, completeJSON, listModels, transcribeAudio } from "./ai.js";
 import { t, setUiLang, uiLang, nativeLanguageName, guessNativeLang, NATIVE_LANGS } from "./i18n.js";
 
 /* =====================================================================
@@ -259,31 +259,160 @@ function speak(text) {
 
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-/** Écoute une phrase. Retourne le texte reconnu (ou "" si rien). */
-function listenOnce(button) {
+/** Problème de micro : kind = blocked | no_device | service | unsupported. */
+class MicError extends Error {
+  constructor(kind) {
+    super(kind);
+    this.kind = kind;
+  }
+}
+
+let micGranted = false;
+
+/**
+ * Demande l'autorisation du micro de façon explicite (getUserMedia).
+ * C'est ce qui fait apparaître la fenêtre « Autoriser ? » d'Android/Chrome,
+ * y compris dans l'APK : l'utilisateur n'a rien à régler à la main.
+ */
+async function ensureMic() {
+  if (micGranted) return;
+  if (!navigator.mediaDevices?.getUserMedia) return; // navigateur ancien : la reconnaissance gérera
+  try {
+    const status = await navigator.permissions?.query({ name: "microphone" });
+    if (status?.state === "granted") {
+      micGranted = true;
+      return;
+    }
+  } catch {
+    /* API Permissions indisponible : on demande directement */
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((tr) => tr.stop());
+    micGranted = true;
+  } catch (e) {
+    if (e.name === "NotFoundError" || e.name === "OverconstrainedError") throw new MicError("no_device");
+    throw new MicError("blocked");
+  }
+}
+
+/** Reconnaissance vocale de Chrome (gratuite, rapide). */
+function recognize(button) {
   return new Promise((resolve, reject) => {
-    if (!Recognition) return reject(new Error(t("mic_unsupported")));
     const rec = new Recognition();
     rec.lang = LANG[state.target].speech;
     rec.interimResults = false;
     rec.maxAlternatives = 1;
     let result = "";
+    let failed = false;
     button?.classList.add("recording");
     rec.onresult = (e) => {
       result = Array.from(e.results).map((r) => r[0].transcript).join(" ");
     };
     rec.onerror = (e) => {
+      failed = true;
       button?.classList.remove("recording");
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") reject(new Error(t("mic_denied")));
-      else if (e.error === "no-speech") resolve("");
-      else reject(new Error(e.error));
+      if (e.error === "no-speech" || e.error === "aborted") resolve("");
+      else if (e.error === "not-allowed" && !micGranted) reject(new MicError("blocked"));
+      else reject(new MicError("service")); // service vocal indisponible sur cet appareil
     };
     rec.onend = () => {
       button?.classList.remove("recording");
-      resolve(result);
+      if (!failed) resolve(result);
     };
-    rec.start();
+    try {
+      rec.start();
+    } catch {
+      button?.classList.remove("recording");
+      reject(new MicError("service"));
+    }
   });
+}
+
+let activeRecorder = null;
+
+/** Secours : enregistre la voix puis la fait transcrire par Gemini. */
+async function recordAndTranscribe(button) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const chunks = [];
+  const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"].find((m) => window.MediaRecorder?.isTypeSupported?.(m)) || "";
+  const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  activeRecorder = recorder;
+  button?.classList.add("recording");
+  toast(t("mic_listening"), 9000);
+  const done = new Promise((resolve) => (recorder.onstop = resolve));
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.start();
+  const timer = setTimeout(() => recorder.state === "recording" && recorder.stop(), 8000);
+  await done;
+  clearTimeout(timer);
+  activeRecorder = null;
+  stream.getTracks().forEach((tr) => tr.stop());
+  button?.classList.remove("recording");
+  const blob = new Blob(chunks, { type: (recorder.mimeType || "audio/webm").split(";")[0] });
+  if (blob.size < 1500) return "";
+  toast(t("mic_transcribing"), 6000);
+  return transcribeAudio(aiConfig(), { blob, language: LANG[state.target].name, onRetry });
+}
+
+/**
+ * Écoute une phrase. Retourne le texte reconnu, "" si rien n'a été entendu,
+ * ou null si l'utilisateur a juste arrêté un enregistrement en cours.
+ */
+async function listenOnce(button) {
+  if (activeRecorder) {
+    activeRecorder.stop(); // second appui : fin de l'enregistrement
+    return null;
+  }
+  await ensureMic();
+  if (Recognition) {
+    try {
+      return await recognize(button);
+    } catch (e) {
+      if (!(e instanceof MicError) || e.kind !== "service") throw e;
+    }
+  }
+  if (state.provider === "gemini" && hasKey() && window.MediaRecorder) return recordAndTranscribe(button);
+  throw new MicError(Recognition ? "service" : "unsupported");
+}
+
+/** Affiche le bon message, ou l'aide pas à pas si le micro est bloqué. */
+function handleMicError(e) {
+  if (e instanceof MicError && e.kind === "blocked") return showMicHelp();
+  if (e instanceof MicError) return toast(t(`mic_${e.kind}`), 6000);
+  showError(e);
+}
+
+/** Fenêtre d'aide affichée seulement quand le micro a été refusé définitivement. */
+function showMicHelp() {
+  document.querySelector(".modal-backdrop")?.remove();
+  const close = () => backdrop.remove();
+  const retry = el("button", { class: "btn", type: "button" }, t("mic_help_retry"));
+  retry.addEventListener("click", async () => {
+    micGranted = false;
+    try {
+      await ensureMic();
+      close();
+      toast(t("mic_ready"));
+    } catch {
+      retry.textContent = t("mic_help_still");
+      setTimeout(() => (retry.textContent = t("mic_help_retry")), 2500);
+    }
+  });
+  const backdrop = el(
+    "div",
+    { class: "modal-backdrop", role: "dialog", "aria-modal": "true", "aria-labelledby": "mic-help-title", onclick: (ev) => ev.target === backdrop && close() },
+    el(
+      "div",
+      { class: "modal" },
+      el("h2", { id: "mic-help-title" }, `🎙️ ${t("mic_help_title")}`),
+      el("p", {}, t("mic_help_intro")),
+      el("ol", {}, el("li", {}, t("mic_help_step1")), el("li", {}, t("mic_help_step2")), el("li", {}, t("mic_help_step3"))),
+      el("div", { class: "row", style: "justify-content:flex-end;margin-top:12px" }, el("button", { class: "btn secondary", type: "button", onclick: close }, t("mic_help_close")), retry)
+    )
+  );
+  document.body.append(backdrop);
+  retry.focus();
 }
 
 /* =====================================================================
@@ -476,12 +605,13 @@ function renderChat(view) {
   micBtn.addEventListener("click", async () => {
     try {
       const said = await listenOnce(micBtn);
+      if (said === null) return;
       if (!said) return toast(t("mic_nothing"));
       input.value = (input.value ? `${input.value} ` : "") + said;
       input.dispatchEvent(new Event("input"));
       input.focus();
     } catch (e) {
-      toast(e.message);
+      handleMicError(e);
     }
   });
 
@@ -680,6 +810,7 @@ function renderOral(view) {
     mic.addEventListener("click", async () => {
       try {
         const said = await listenOnce(mic);
+        if (said === null) return;
         if (!said) return toast(t("mic_nothing"));
         const { score, words } = scorePronunciation(p.text, said);
         oralSet.scores[index] = score;
@@ -693,7 +824,7 @@ function renderOral(view) {
           el("p", { class: "muted", style: "margin-top:8px" }, `${t("oral_heard")} « ${said} »`)
         );
       } catch (e) {
-        toast(e.message);
+        handleMicError(e);
       }
     });
     area.replaceChildren(
@@ -748,7 +879,7 @@ function renderOral(view) {
   mount(view, 
     el("h1", {}, `🎙️ ${t("oral_title")}`),
     el("p", { class: "muted" }, t("oral_intro")),
-    !Recognition ? el("div", { class: "notice" }, t("mic_unsupported")) : null,
+    !Recognition && !window.MediaRecorder ? el("div", { class: "notice" }, t("mic_unsupported")) : null,
     el(
       "div",
       { class: "card" },

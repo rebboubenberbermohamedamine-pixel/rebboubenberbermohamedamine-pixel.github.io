@@ -327,6 +327,43 @@ export async function completeJSON(cfg, { system, prompt, signal, onRetry }) {
   return parseJSONLoose(text);
 }
 
+/**
+ * Transcrit un enregistrement audio (secours quand la reconnaissance vocale
+ * du téléphone n'est pas disponible). Gemini uniquement : il accepte l'audio en entrée.
+ */
+export async function transcribeAudio(cfg, { blob, language, onRetry, signal }) {
+  check(cfg);
+  if (cfg.provider !== "gemini") throw new AIError("unknown", { detail: "audio transcription needs Gemini" });
+  const base64 = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+  const body = {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { inlineData: { mimeType: blob.type || "audio/webm", data: base64 } },
+          {
+            text: `Transcribe exactly what is said in this recording. The speaker is practising ${language}. Return only the transcription, with no comment. If nothing intelligible is said, return an empty string.`,
+          },
+        ],
+      },
+    ],
+  };
+  const res = await fetchRetry(
+    `${GEMINI}/models/${encodeURIComponent(cfg.model)}:generateContent`,
+    { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": cfg.key }, body: JSON.stringify(body), signal },
+    onRetry
+  );
+  if (!res.ok) await failFromResponse(res);
+  const data = await res.json();
+  const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+  return text.replace(/^["«»“”]+|["«»“”]+$/g, "").trim();
+}
+
 export async function listModels(cfg) {
   check(cfg);
   return LISTERS[cfg.provider](cfg);
