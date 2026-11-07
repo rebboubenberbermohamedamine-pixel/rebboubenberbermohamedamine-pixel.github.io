@@ -511,6 +511,16 @@ body.onboarding main { padding-bottom: 32px; }
 .correction { display: block; }
 .chat-wrap.with-topic { height: calc(100dvh - 400px - env(safe-area-inset-bottom) - env(safe-area-inset-top)); min-height: 280px; }
 
+.repeat-card {
+  align-self: stretch; margin: 2px 0 4px; margin-inline-start: 42px;
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.1), rgba(79, 70, 229, 0.08));
+  border: 1px dashed #7c3aed; border-radius: 14px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px; animation: rise 0.3s ease-out;
+}
+.repeat-card .block-label { color: #7c3aed; opacity: 1; }
+.repeat-sentence { font-size: 18px; font-weight: 700; }
+.repeat-card .row { gap: 6px; }
+
 /* ---------- Appel vocal ---------- */
 .call-btn {
   flex: none; display: inline-flex; align-items: center; gap: 6px;

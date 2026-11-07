@@ -563,7 +563,13 @@ function chatSystemPrompt(scenarioId) {
       ? `Current topic: ${topic ? `"${topic}"` : "none yet — if the learner has not chosen one, propose an interesting topic or follow what they say"}.`
       : `Current activity (role-play, stay in character): ${sc.persona}`,
     "",
-    "How to reply each turn:",
+    "CORRECTION LOOP (most important rule, like a real tutor):",
+    "A) If the learner's last message contains a grammar, vocabulary or word-order mistake, do NOT continue the conversation yet. Reply with only one short encouraging sentence, then give the corrected sentence between quotes and ask the learner to repeat it (for example: Almost! Say: \"I'm going to New York in December.\" Can you repeat it?). Add the ✏️ line described below, and no 📚 line in that turn.",
+    "B) If the learner's message is a repetition of the corrected sentence and it is now correct, praise briefly (Perfect! / Great, that's it!) and then continue the conversation normally as described below.",
+    "C) If the repetition still has a mistake, correct it once more in the same way. After a second attempt, praise the effort and continue the conversation anyway.",
+    "D) If the message has no mistake, simply continue the conversation (you may add a 💡 line).",
+    "",
+    "How to continue the conversation:",
     `- Write in ${lang}, adapted to level ${state.level} (slightly above it to help the learner grow).`,
     "- React genuinely and specifically to what the learner said, then add something of your own: an interesting idea, fact, opinion, personal-style anecdote or cultural detail related to the topic (3 to 6 sentences).",
     "- End with ONE open question that invites a developed answer (why, how, what would you do, tell me about…). Never ask yes/no questions only.",
@@ -572,7 +578,7 @@ function chatSystemPrompt(scenarioId) {
     `- If the learner writes in ${native} or mixes languages, help them say it in ${lang} and continue.`,
     "",
     "After your reply, add these optional lines, each on its own line, in exactly this order and format:",
-    `✏️ <the learner's last message, corrected>  — only if it contains mistakes; then on the next line a very short explanation in ${native}.`,
+    `✏️ <the learner's last message, fully corrected — the exact sentence they must repeat>  — only in case A or C; then on the next line a very short explanation of the mistake in ${native}.`,
     `💡 <a more natural way a native speaker would say what the learner said>  — only if their message was understandable but could sound more natural.`,
     `📚 <useful word or expression from your reply> — <short meaning in ${native}>  — one or two such lines, choosing vocabulary worth learning at level ${state.level}.`,
     `When you start a new topic, the very first line of your message must be: 🧭 <topic name in ${native}>`,
@@ -927,8 +933,68 @@ function renderChat(view) {
 
   const messagesBox = el("div", { class: "messages", "aria-live": "polite" });
   const scrollDown = () => (messagesBox.scrollTop = messagesBox.scrollHeight);
+  /** Carte « Répétez » : la phrase corrigée à redire (à l'oral ou à l'écrit). */
+  const repeatCard = (sentence) => {
+    const sayBtn = el("button", { class: "btn small", type: "button" }, `🎙️ ${t("repeat_say")}`);
+    sayBtn.addEventListener("click", async () => {
+      try {
+        const said = await listenOnce(sayBtn);
+        if (said === null) return;
+        if (!said) return toast(t("mic_nothing"));
+        const { score } = scorePronunciation(sentence, said);
+        toast(t("repeat_score", { n: score }), 3500);
+        input.value = said;
+        await send();
+      } catch (e) {
+        handleMicError(e);
+      }
+    });
+    return el(
+      "div",
+      { class: "repeat-card" },
+      el("span", { class: "block-label" }, `🔁 ${t("repeat_title")}`),
+      el("div", { class: "repeat-sentence", dir: "ltr" }, richText(sentence)),
+      el(
+        "div",
+        { class: "row" },
+        el("button", { class: "btn secondary small", type: "button", onclick: () => speak(sentence) }, `🔊 ${t("listen")}`),
+        sayBtn,
+        el(
+          "button",
+          {
+            class: "btn secondary small",
+            type: "button",
+            onclick: () => {
+              input.placeholder = t("repeat_hint");
+              input.focus();
+            },
+          },
+          `✍️ ${t("repeat_type")}`
+        )
+      )
+    );
+  };
+
+  /** Phrase à répéter si le dernier message du tuteur contient une correction. */
+  const pendingRepeat = () => {
+    const last = [...history].reverse().find((m) => !m.hidden);
+    if (!last || last.role !== "assistant") return "";
+    const corr = parseAI(last.content).correction;
+    if (!corr) return "";
+    return corr
+      .split("\n")[0]
+      .replace(/^✏️\s*/, "")
+      .replace(/\s+[—–-]\s+[\s\S]*$/, "")
+      .replace(/^["«“]+|["»”]+$/g, "")
+      .trim();
+  };
+
   const redraw = () => {
-    messagesBox.replaceChildren(...history.map((m) => renderMessage(m, speak)).filter(Boolean));
+    const nodes = history.map((m) => renderMessage(m, speak)).filter(Boolean);
+    const toRepeat = chatAbort ? "" : pendingRepeat();
+    if (toRepeat) nodes.push(repeatCard(toRepeat));
+    messagesBox.replaceChildren(...nodes);
+    if (!toRepeat && input) input.placeholder = t("chat_placeholder", { lang: targetName() });
     scrollDown();
   };
 
@@ -1082,7 +1148,8 @@ function callSystemPrompt(scenarioId) {
       `Topic: ${topic ? `"${topic}"` : "choose an interesting topic yourself and announce it in your first sentence"}.`,
       "Have a long, natural, engaging spoken conversation:",
       "- React to what the learner says, share an interesting idea, fact or short story, and end every turn with ONE open question that makes them talk.",
-      `- If the learner made a mistake or could say it more naturally, start your turn with "A more natural way to say it: ..." (one sentence), then continue the conversation.`,
+      "- CORRECTION LOOP: if the learner's sentence has a mistake, do NOT continue yet. Say one short encouraging word, say the corrected sentence between quotes and ask them to repeat it (for example: Almost! Say: \"I need a taxi to my hotel.\" Please repeat.). When they repeat it correctly, praise briefly (Perfect!) and then continue the conversation. If the repetition is still wrong, correct once more; after a second try, praise the effort and continue anyway.",
+      "- If the sentence is correct but could sound more natural, you may say \"You could also say: ...\" in one sentence, then continue.",
       `- From time to time, teach one useful new word or expression and explain it simply in ${lang}.`,
       "- When the topic runs dry, move to a related new angle. Never end the call yourself.",
       `Speak only ${lang}. Two to four short spoken sentences per turn. No emojis, no markdown, no lists, no stage directions.`,

@@ -1,6 +1,6 @@
 // Service worker : met en cache l'interface pour un démarrage rapide et hors ligne.
 // Les appels aux API d'IA ne sont jamais mis en cache.
-const CACHE = "parlio-v10";
+const CACHE = "parlio-v11";
 const SHELL = [
   "./",
   "./index.html",
