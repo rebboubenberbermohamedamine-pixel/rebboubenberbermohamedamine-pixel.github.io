@@ -419,8 +419,8 @@ function showMicHelp() {
    Navigation
    ===================================================================== */
 
-const VIEWS = { chat: renderChat, oral: renderOral, lessons: renderLessons, progress: renderProgress, settings: renderSettings };
-let currentTab = "chat";
+const VIEWS = { home: (v) => renderHome(v), chat: renderChat, oral: renderOral, lessons: renderLessons, progress: renderProgress, settings: renderSettings };
+let currentTab = "home";
 let chatAbort = null;
 
 function go(tab) {
@@ -430,12 +430,17 @@ function go(tab) {
   }
   if ("speechSynthesis" in window) speechSynthesis.cancel();
   currentTab = tab;
+  if (["chat", "oral", "lessons"].includes(tab) && state.lastModule !== tab) {
+    state.lastModule = tab;
+    save();
+  }
   try {
     sessionStorage.setItem("parlio:tab", tab);
   } catch {
     /* ignoré */
   }
   document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  document.getElementById("settings-btn")?.classList.toggle("active", tab === "settings");
   const view = document.getElementById("view");
   view.replaceChildren();
   VIEWS[tab](view);
@@ -1347,63 +1352,261 @@ function renderSettings(view) {
 }
 
 /* =====================================================================
-   Écran d'accueil : langue maternelle et langue apprise
+   Premier lancement : 3 étapes (langue maternelle, langue apprise + niveau, micro)
    ===================================================================== */
+
+let onbStep = 0;
 
 function renderWelcome() {
   document.body.classList.add("onboarding");
   const view = document.getElementById("view");
-  const choice = (selected, onPick) => (value, label) =>
+  const choice = (selected, onPick) => (value, label, sub) =>
     el(
       "button",
       { type: "button", class: `choice ${selected === value ? "active" : ""}`, "aria-pressed": String(selected === value), onclick: () => onPick(value) },
-      label
+      el("span", {}, label),
+      sub ? el("small", {}, sub) : null
+    );
+  const rerender = () => {
+    refreshChrome();
+    renderWelcome();
+  };
+
+  const dots = el(
+    "div",
+    { class: "steps", "aria-label": `${onbStep + 1} / 3` },
+    [0, 1, 2].map((i) => el("span", { class: i === onbStep ? "on" : i < onbStep ? "done" : "" }))
+  );
+  const nextBtn = (label, onclick, disabled = false) => el("button", { class: "btn big", type: "button", disabled, onclick }, label);
+  const backBtn = () =>
+    el(
+      "button",
+      {
+        class: "btn ghost",
+        type: "button",
+        onclick: () => {
+          onbStep -= 1;
+          renderWelcome();
+        },
+      },
+      `${arrowBack()} ${t("onb_back")}`
     );
 
-  const nativeChoice = choice(state.ui, (v) => {
-    state.ui = v;
-    if (state.target === v) state.target = v === "en" ? "fr" : "en";
-    refreshChrome();
-    renderWelcome();
-  });
-  const targetChoice = choice(state.target, (v) => {
-    state.target = v;
-    refreshChrome();
-    renderWelcome();
-  });
-
-  view.replaceChildren();
-  mount(
-    view,
-    el(
-      "div",
-      { class: "welcome" },
-      el("img", { src: "icons/icon-192.png", alt: "", width: "72", height: "72" }),
+  let body;
+  if (onbStep === 0) {
+    const pick = choice(state.ui, (v) => {
+      state.ui = v;
+      if (state.target === v) state.target = v === "en" ? "fr" : "en";
+      rerender();
+    });
+    body = [
+      el("div", { class: "welcome-logo" }, el("img", { src: "icons/icon-192.png", alt: "", width: "84", height: "84" })),
       el("h1", {}, t("welcome_title")),
+      el("p", { class: "muted" }, t("onb_tagline")),
       el("h2", {}, t("welcome_native")),
-      el("div", { class: "choices" }, Object.entries(NATIVE_LANGS).map(([code, l]) => nativeChoice(code, l.label))),
-      el("h2", {}, t("welcome_target")),
       el(
         "div",
         { class: "choices" },
-        targetChoice("en", `🇬🇧 ${t("lang_en")}`),
-        targetChoice("fr", `🇫🇷 ${t("lang_fr")}`)
+        pick("ar", "العربية", "Arabic · Arabe"),
+        pick("fr", "Français", "French · الفرنسية"),
+        pick("en", "English", "Anglais · الإنجليزية")
+      ),
+      nextBtn(`${t("onb_next")} ${arrowNext()}`, () => {
+        onbStep = 1;
+        renderWelcome();
+      }),
+    ];
+  } else if (onbStep === 1) {
+    const pickTarget = choice(state.target, (v) => {
+      state.target = v;
+      rerender();
+    });
+    const pickLevel = choice(state.level, (v) => {
+      state.level = v;
+      rerender();
+    });
+    body = [
+      el("h1", {}, t("welcome_target")),
+      el("div", { class: "choices two" }, pickTarget("en", `🇬🇧 ${t("lang_en")}`), pickTarget("fr", `🇫🇷 ${t("lang_fr")}`)),
+      el("h2", {}, t("onb_level")),
+      el(
+        "div",
+        { class: "choices levels" },
+        LEVELS.map((l) => pickLevel(l, l, t(`level_${l}`)))
+      ),
+      el("div", { class: "row onb-nav" }, backBtn(), nextBtn(`${t("onb_next")} ${arrowNext()}`, () => {
+        onbStep = 2;
+        renderWelcome();
+      })),
+    ];
+  } else {
+    const status = el("p", { class: "mic-status", "aria-live": "polite" }, micGranted ? `✅ ${t("onb_mic_ok")}` : "");
+    const allow = el("button", { class: "btn big", type: "button" }, `🎙️ ${t("onb_mic_allow")}`);
+    const finish = () => {
+      state.onboarded = true;
+      save();
+      document.body.classList.remove("onboarding");
+      go("home");
+    };
+    allow.addEventListener("click", async () => {
+      allow.disabled = true;
+      try {
+        await ensureMic();
+        status.textContent = `✅ ${t("onb_mic_ok")}`;
+        setTimeout(finish, 900);
+      } catch (e) {
+        allow.disabled = false;
+        if (e instanceof MicError && e.kind === "blocked") showMicHelp();
+        else status.textContent = t(`mic_${e.kind || "service"}`);
+      }
+    });
+    body = [
+      el("div", { class: "mic-illustration", "aria-hidden": "true" }, "🎙️"),
+      el("h1", {}, t("onb_mic_title")),
+      el("p", { class: "muted" }, t("onb_mic_text")),
+      el(
+        "ul",
+        { class: "perks" },
+        el("li", {}, `💬 ${t("onb_mic_perk1")}`),
+        el("li", {}, `🗣️ ${t("onb_mic_perk2")}`),
+        el("li", {}, `🔒 ${t("onb_mic_perk3")}`)
+      ),
+      status,
+      micGranted ? nextBtn(`${t("welcome_start")} ${arrowNext()}`, finish) : allow,
+      el("div", { class: "row onb-nav" }, backBtn(), micGranted ? null : el("button", { class: "btn ghost", type: "button", onclick: finish }, t("onb_mic_later"))),
+    ];
+  }
+
+  view.replaceChildren();
+  mount(view, el("div", { class: "welcome" }, dots, body));
+}
+
+/* =====================================================================
+   0. Page d'accueil
+   ===================================================================== */
+
+const DAILY_GOAL = 20;
+
+// Mot du jour : petite liste intégrée, traduite dans les 3 langues maternelles.
+const WORDS_OF_DAY = {
+  en: [
+    { w: "breakthrough", fr: "percée, avancée décisive", ar: "إنجاز كبير", ex: "Learning every day led to a real breakthrough." },
+    { w: "to look forward to", fr: "avoir hâte de", ar: "يتطلّع إلى", ex: "I look forward to our next lesson." },
+    { w: "reliable", fr: "fiable", ar: "موثوق", ex: "She is a reliable friend." },
+    { w: "to figure out", fr: "comprendre, trouver", ar: "يكتشف / يفهم", ex: "I finally figured out the answer." },
+    { w: "meanwhile", fr: "pendant ce temps", ar: "في هذه الأثناء", ex: "Meanwhile, the water was boiling." },
+    { w: "eager", fr: "impatient, enthousiaste", ar: "متحمّس", ex: "The students were eager to start." },
+    { w: "to run out of", fr: "manquer de", ar: "ينفد منه", ex: "We ran out of milk." },
+    { w: "worth it", fr: "ça vaut le coup", ar: "يستحق العناء", ex: "The trip was long but worth it." },
+    { w: "to make sense", fr: "avoir du sens", ar: "يكون منطقيًا", ex: "Does this sentence make sense?" },
+    { w: "although", fr: "bien que", ar: "على الرغم من", ex: "Although it was late, we kept talking." },
+    { w: "to catch up", fr: "rattraper son retard", ar: "يلحق بالركب", ex: "Let's catch up this weekend." },
+    { w: "skill", fr: "compétence", ar: "مهارة", ex: "Listening is an important skill." },
+    { w: "to get used to", fr: "s'habituer à", ar: "يعتاد على", ex: "You will get used to the accent." },
+    { w: "proud", fr: "fier", ar: "فخور", ex: "I'm proud of my progress." },
+  ],
+  fr: [
+    { w: "épanouissement", en: "fulfilment", ar: "ازدهار / تحقيق الذات", ex: "Le sport contribue à l'épanouissement." },
+    { w: "avoir hâte", en: "to look forward to", ar: "يتشوّق إلى", ex: "J'ai hâte de partir en vacances." },
+    { w: "fiable", en: "reliable", ar: "موثوق", ex: "Cette voiture est très fiable." },
+    { w: "se débrouiller", en: "to manage, to get by", ar: "يتدبّر أمره", ex: "Je me débrouille bien en français." },
+    { w: "pourtant", en: "yet, however", ar: "ومع ذلك", ex: "Il est fatigué, pourtant il continue." },
+    { w: "un rendez-vous", en: "an appointment", ar: "موعد", ex: "J'ai un rendez-vous chez le médecin." },
+    { w: "être à l'heure", en: "to be on time", ar: "يكون في الموعد", ex: "Le train est à l'heure." },
+    { w: "volontiers", en: "gladly", ar: "بكل سرور", ex: "Un café ? Volontiers !" },
+    { w: "d'ailleurs", en: "besides, by the way", ar: "بالمناسبة", ex: "D'ailleurs, tu as raison." },
+    { w: "réussir", en: "to succeed", ar: "ينجح", ex: "Elle a réussi son examen." },
+    { w: "un quartier", en: "a neighbourhood", ar: "حيّ", ex: "J'habite dans un quartier calme." },
+    { w: "fier / fière", en: "proud", ar: "فخور", ex: "Je suis fière de toi." },
+    { w: "s'habituer à", en: "to get used to", ar: "يعتاد على", ex: "Je m'habitue au froid." },
+    { w: "un savoir-faire", en: "know-how", ar: "خبرة / مهارة", ex: "C'est un savoir-faire unique." },
+  ],
+};
+
+function wordOfDay() {
+  const list = WORDS_OF_DAY[state.target];
+  const d = new Date();
+  const dayIndex = Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+  return list[dayIndex % list.length];
+}
+
+function renderHome(view) {
+  const p = state.progress;
+  const todayXP = p.xpByDay[today()] || 0;
+  const totalXP = Object.values(p.xpByDay).reduce((s, x) => s + x, 0);
+  const pct = Math.min(100, Math.round((100 * todayXP) / DAILY_GOAL));
+  const hour = new Date().getHours();
+  const greet = hour < 12 ? t("greet_morning") : hour < 18 ? t("greet_afternoon") : t("greet_evening");
+  const flag = state.target === "en" ? "🇬🇧" : "🇫🇷";
+  const last = state.lastModule || "chat";
+  const lastLabel = { chat: t("tab_chat"), oral: t("tab_oral"), lessons: t("tab_lessons") }[last] || t("tab_chat");
+
+  const moduleCard = (tab, icon, title, desc, tone) =>
+    el(
+      "button",
+      { type: "button", class: `module ${tone}`, onclick: () => go(tab) },
+      el("span", { class: "module-icon", "aria-hidden": "true" }, icon),
+      el("b", {}, title),
+      el("span", { class: "module-desc" }, desc)
+    );
+
+  const w = wordOfDay();
+
+  mount(
+    view,
+    !hasKey()
+      ? el(
+          "button",
+          { type: "button", class: "key-banner", onclick: () => go("settings") },
+          el("span", { "aria-hidden": "true" }, "🔑"),
+          el("span", { class: "grow" }, t("home_key_banner")),
+          el("span", { "aria-hidden": "true" }, arrowNext())
+        )
+      : null,
+    el(
+      "section",
+      { class: "hero" },
+      el(
+        "div",
+        { class: "hero-top" },
+        el(
+          "div",
+          { class: "grow" },
+          el("p", { class: "hello" }, `${greet} 👋`),
+          el("h1", {}, t("home_title", { lang: `${t(`lang_${state.target}`)} ${flag}` }))
+        ),
+        el(
+          "div",
+          { class: "ring", style: `--p:${pct}`, role: "img", "aria-label": t("home_goal_aria", { n: todayXP, goal: DAILY_GOAL }) },
+          el("div", { class: "ring-inner", dir: "ltr" }, el("b", {}, String(todayXP)), el("small", {}, `/ ${DAILY_GOAL} XP`))
+        )
       ),
       el(
-        "button",
-        {
-          class: "btn",
-          type: "button",
-          style: "width:100%;margin-top:20px;padding:14px",
-          onclick: () => {
-            state.onboarded = true;
-            save();
-            document.body.classList.remove("onboarding");
-            go(hasKey() ? "chat" : "settings");
-          },
-        },
-        `${t("welcome_start")} ${arrowNext()}`
-      )
+        "div",
+        { class: "hero-stats" },
+        el("span", {}, `🔥 ${streakDays()} ${t("streak")}`),
+        el("span", {}, `⭐ ${totalXP} XP`),
+        el("span", {}, `🎯 ${state.level}`)
+      ),
+      el("p", { class: "hero-goal" }, pct >= 100 ? t("home_goal_done") : t("home_goal_left", { n: DAILY_GOAL - todayXP })),
+      el("button", { class: "btn hero-cta", type: "button", onclick: () => go(last) }, `▶ ${t("home_continue", { what: lastLabel })}`)
+    ),
+    el("h2", {}, t("home_what")),
+    el(
+      "div",
+      { class: "modules" },
+      moduleCard("chat", "💬", t("tab_chat"), t("mod_chat_desc"), "tone-indigo"),
+      moduleCard("oral", "🎙️", t("tab_oral"), t("mod_oral_desc"), "tone-teal"),
+      moduleCard("lessons", "📚", t("tab_lessons"), t("mod_lessons_desc"), "tone-amber"),
+      moduleCard("progress", "📈", t("tab_progress"), t("mod_progress_desc"), "tone-rose")
+    ),
+    el(
+      "section",
+      { class: "card wotd" },
+      el("div", { class: "wotd-head" }, el("span", {}, `✨ ${t("wotd_title")}`), el("button", { class: "btn ghost small", type: "button", "aria-label": t("listen"), onclick: () => speak(w.w) }, "🔊")),
+      el("div", { class: "wotd-word", dir: "ltr" }, w.w),
+      el("div", { class: "wotd-tr", dir: "auto" }, w[state.ui] || w.fr || w.en || ""),
+      el("div", { class: "wotd-ex", dir: "ltr" }, `“${w.ex}”`)
     )
   );
 }
@@ -1413,6 +1616,8 @@ function renderWelcome() {
    ===================================================================== */
 
 document.querySelectorAll(".tabbar button").forEach((b) => b.addEventListener("click", () => go(b.dataset.tab)));
+document.getElementById("settings-btn")?.addEventListener("click", () => go("settings"));
+document.querySelector(".brand")?.addEventListener("click", () => state.onboarded && go("home"));
 document.querySelectorAll(".lang-switch button").forEach((b) =>
   b.addEventListener("click", () => {
     state.target = b.dataset.target;
@@ -1427,7 +1632,7 @@ document.querySelectorAll(".lang-switch button").forEach((b) =>
 if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged = () => {};
 
 refreshChrome();
-let startTab = hasKey() ? "chat" : "settings";
+let startTab = "home";
 try {
   const saved = sessionStorage.getItem("parlio:tab");
   if (saved && VIEWS[saved]) startTab = saved;

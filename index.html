@@ -17,20 +17,23 @@
       <img src="icons/icon-192.png" alt="" width="28" height="28" />
       <span>Parlio</span>
     </div>
-    <div class="lang-switch" role="group" aria-label="Langue apprise">
-      <button type="button" data-target="en" class="pill">🇬🇧 English</button>
-      <button type="button" data-target="fr" class="pill">🇫🇷 Français</button>
+    <div class="top-actions">
+      <div class="lang-switch" role="group" aria-label="Langue apprise">
+        <button type="button" data-target="en" class="pill">🇬🇧 EN</button>
+        <button type="button" data-target="fr" class="pill">🇫🇷 FR</button>
+      </div>
+      <button type="button" id="settings-btn" class="gear" aria-label="Réglages / Settings / الإعدادات">⚙️</button>
     </div>
   </header>
 
   <main id="view" tabindex="-1"></main>
 
   <nav class="tabbar" aria-label="Navigation principale">
+    <button type="button" data-tab="home"><span class="ico">🏠</span><span data-i18n="tab_home"></span></button>
     <button type="button" data-tab="chat"><span class="ico">💬</span><span data-i18n="tab_chat"></span></button>
     <button type="button" data-tab="oral"><span class="ico">🎙️</span><span data-i18n="tab_oral"></span></button>
     <button type="button" data-tab="lessons"><span class="ico">📚</span><span data-i18n="tab_lessons"></span></button>
     <button type="button" data-tab="progress"><span class="ico">📈</span><span data-i18n="tab_progress"></span></button>
-    <button type="button" data-tab="settings"><span class="ico">⚙️</span><span data-i18n="tab_settings"></span></button>
   </nav>
 
   <div id="toast" role="status" aria-live="polite"></div>
