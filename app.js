@@ -343,9 +343,11 @@ function recognize(button) {
       else reject(new MicError("service")); // service vocal indisponible sur cet appareil
     };
     rec.onend = () => {
+      if (activeRecognition === rec) activeRecognition = null;
       button?.classList.remove("recording");
       if (!failed) resolve(result);
     };
+    activeRecognition = rec;
     try {
       rec.start();
     } catch {
@@ -356,6 +358,44 @@ function recognize(button) {
 }
 
 let activeRecorder = null;
+let activeRecognition = null;
+
+/** Coupe toute écoute en cours (reconnaissance ou enregistrement). */
+function stopListening() {
+  try {
+    activeRecognition?.abort();
+  } catch {
+    /* déjà arrêtée */
+  }
+  activeRecognition = null;
+  if (activeRecorder && activeRecorder.state === "recording") activeRecorder.stop();
+}
+
+/** Lit un texte à voix haute et attend la fin de la lecture. */
+function speakAsync(text) {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window) || !text) return resolve();
+    let done = false;
+    const finish = () => {
+      if (!done) {
+        done = true;
+        resolve();
+      }
+    };
+    speechSynthesis.cancel();
+    const clean = text.replace(/\*/g, "").replace(/\[END\]/gi, "");
+    const u = new SpeechSynthesisUtterance(clean);
+    u.lang = LANG[state.target].speech;
+    u.rate = Number(state.voiceRate) || 1;
+    const voice = speechSynthesis.getVoices().find((v) => v.lang.replace("_", "-").startsWith(state.target));
+    if (voice) u.voice = voice;
+    u.onend = finish;
+    u.onerror = finish;
+    speechSynthesis.speak(u);
+    // Sécurité si le navigateur ne signale jamais la fin.
+    setTimeout(finish, Math.min(45000, 2500 + clean.length * 110));
+  });
+}
 
 /** Secours : enregistre la voix puis la fait transcrire par Gemini. */
 async function recordAndTranscribe(button) {
@@ -541,6 +581,16 @@ function mainPart(text) {
   return (idx >= 0 ? text.slice(0, idx) : text).trim();
 }
 
+/** Traduit un texte de la langue apprise vers la langue maternelle. */
+function translateText(text, onText) {
+  return streamChat(aiConfig(), {
+    system: `You are a translator. Translate the user's ${LANG[state.target].name} text into ${nativeLanguageName(state.ui)}. Keep the meaning and the tone, write naturally and simply, keep **bold** markers, and output only the translation.`,
+    messages: [{ role: "user", content: text }],
+    onRetry,
+    onText,
+  });
+}
+
 /** Traduit un message de l'IA dans la langue maternelle (mis en cache dans le message). */
 async function translateInto(m, box, btn) {
   const existing = box.querySelector(".translation-box");
@@ -565,12 +615,7 @@ async function translateInto(m, box, btn) {
   const textBox = el("span", { class: "typing" });
   out.append(textBox);
   try {
-    const translated = await streamChat(aiConfig(), {
-      system: `You are a translator. Translate the user's ${LANG[state.target].name} text into ${nativeLanguageName(state.ui)}. Keep the meaning and the tone, write naturally and simply, keep **bold** markers, and output only the translation.`,
-      messages: [{ role: "user", content: mainPart(m.content) }],
-      onRetry,
-      onText: (full) => textBox.replaceChildren(richText(full)),
-    });
+    const translated = await translateText(mainPart(m.content), (full) => textBox.replaceChildren(richText(full)));
     m.translation = translated.trim();
     m.translationLang = state.ui;
     save();
@@ -670,6 +715,13 @@ function renderChat(view) {
     "↺"
   );
 
+  const callBtn = el(
+    "button",
+    { class: "call-btn", type: "button", title: t("call_btn"), "aria-label": t("call_btn"), onclick: () => startCall() },
+    el("span", { "aria-hidden": "true" }, "📞"),
+    el("span", {}, t("call_btn"))
+  );
+
   const header = el(
     "div",
     { class: "bot-header" },
@@ -681,6 +733,7 @@ function renderChat(view) {
       el("span", { class: "bot-status" }, el("span", { class: "dot", "aria-hidden": "true" }), t("bot_online")),
       el("div", { class: "bot-role" }, t("bot_role", { lang: targetName() }))
     ),
+    callBtn,
     newChat
   );
 
@@ -813,6 +866,234 @@ function renderChat(view) {
     el("div", { class: "chat-wrap" }, messagesBox, el("div", { class: "composer" }, micBtn, el("div", { class: "grow" }, input), sendBtn))
   );
   redraw();
+}
+
+/* =====================================================================
+   1 bis. Appel vocal avec le robot (mains libres)
+   ===================================================================== */
+
+const CALL_ITEMS = 5;
+
+function callSystemPrompt(scenarioId) {
+  const sc = SCENARIOS[scenarioId] || SCENARIOS.free;
+  const lang = LANG[state.target].name;
+  return [
+    "You are Parlio, a friendly robot language tutor on a live voice call. Everything you write is read aloud.",
+    `The learner is practising ${lang} at CEFR level ${state.level}. Context: ${sc.persona}`,
+    `Run a short spoken drill of ${CALL_ITEMS} situations:`,
+    `1. Describe a short real-life situation in ${lang} (for example "You need a taxi.") so that the learner answers with one sentence.`,
+    "2. If the learner's sentence has a mistake or sounds unnatural, say the corrected sentence between quotes and ask them to repeat it.",
+    "3. When the sentence is correct, praise briefly (for example \"Good.\" or \"Perfect!\") and give the next situation. Say \"Last one.\" before the final situation.",
+    `After the ${CALL_ITEMS}th correct answer, congratulate the learner in one short sentence and end your message with [END].`,
+    `Speak only ${lang}. Use one or two very short sentences per turn. No emojis, no markdown, no lists, no stage directions.`,
+  ].join("\n");
+}
+
+let currentCall = null;
+
+async function startCall() {
+  if (currentCall) return;
+  if (!hasKey()) {
+    toast(t("need_key"));
+    return;
+  }
+  try {
+    await ensureMic();
+  } catch (e) {
+    handleMicError(e);
+    return;
+  }
+
+  const scenarioId = currentScenario();
+  const call = {
+    active: true,
+    paused: false,
+    abort: null,
+    started: Date.now(),
+    turns: [{ role: "user", content: `(The call starts now. Greet me in one short sentence and give the first situation.)` }],
+    transcript: [],
+    lastTutor: "",
+    timer: null,
+  };
+  currentCall = call;
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+
+  /* ---------- Interface ---------- */
+  const status = el("div", { class: "call-status", "aria-live": "polite" }, t("call_connecting"));
+  const time = el("div", { class: "call-time", dir: "ltr" }, "00:00");
+  const avatarWrap = el("div", { class: "call-avatar" }, robotAvatar(120));
+  const tutorLine = el("div", { class: "caption tutor", dir: "ltr", hidden: true });
+  const userLine = el("div", { class: "caption user", dir: "ltr", hidden: true });
+  const transLine = el("div", { class: "caption trans", dir: "auto", hidden: true });
+
+  const muteBtn = el("button", { class: "call-ctrl", type: "button", "aria-pressed": "false", "aria-label": t("call_mute") }, el("span", { "aria-hidden": "true" }, "🎙️"), el("small", {}, t("call_mute")));
+  const transBtn = el("button", { class: "call-ctrl", type: "button", "aria-label": t("translate") }, el("span", { "aria-hidden": "true" }, "🌐"), el("small", {}, t("translate")));
+  const hangBtn = el("button", { class: "call-hang", type: "button", "aria-label": t("call_hangup") }, el("span", { "aria-hidden": "true" }, "📞"));
+
+  const screen = el(
+    "div",
+    { class: "call-screen", role: "dialog", "aria-modal": "true", "aria-label": t("call_title") },
+    el("div", { class: "call-top" }, el("span", { class: "call-badge" }, `🔒 ${t("call_title")}`), time),
+    el("div", { class: "call-center" }, avatarWrap, el("div", { class: "call-name" }, "Parlio"), status),
+    el("div", { class: "call-captions" }, tutorLine, transLine, userLine),
+    el("div", { class: "call-controls" }, muteBtn, hangBtn, transBtn)
+  );
+  document.body.append(screen);
+  document.body.classList.add("in-call");
+  call.timer = setInterval(() => {
+    const s = Math.floor((Date.now() - call.started) / 1000);
+    time.textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  }, 1000);
+
+  const setMode = (mode) => {
+    avatarWrap.classList.toggle("speaking", mode === "speaking");
+    avatarWrap.classList.toggle("listening", mode === "listening");
+    avatarWrap.classList.toggle("thinking", mode === "thinking");
+    status.textContent = t(`call_${mode}`);
+  };
+
+  const showTutor = (text) => {
+    call.lastTutor = text;
+    tutorLine.hidden = false;
+    tutorLine.replaceChildren(el("b", {}, "Parlio : "), document.createTextNode(text));
+    transLine.hidden = true;
+  };
+  const showUser = (text) => {
+    userLine.hidden = !text;
+    userLine.replaceChildren(el("b", {}, `${t("call_you")} : `), document.createTextNode(text));
+  };
+
+  const end = (saveTranscript = true) => {
+    if (!call.active) return;
+    call.active = false;
+    currentCall = null;
+    clearInterval(call.timer);
+    call.abort?.abort();
+    stopListening();
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    if (saveTranscript && call.transcript.length) {
+      const history = getChat();
+      history.push(...call.transcript);
+      if (history.length > 200) history.splice(1, history.length - 200);
+      save();
+    }
+    screen.classList.add("closing");
+    setTimeout(() => {
+      screen.remove();
+      document.body.classList.remove("in-call");
+      if (currentTab === "chat") go("chat");
+    }, 250);
+  };
+
+  hangBtn.addEventListener("click", () => end(true));
+  muteBtn.addEventListener("click", () => {
+    call.paused = !call.paused;
+    muteBtn.setAttribute("aria-pressed", String(call.paused));
+    muteBtn.classList.toggle("off", call.paused);
+    if (call.paused) {
+      stopListening();
+      setMode("paused");
+    } else {
+      listenLoop();
+    }
+  });
+  transBtn.addEventListener("click", async () => {
+    if (!call.lastTutor) return;
+    if (!transLine.hidden) {
+      transLine.hidden = true;
+      return;
+    }
+    transLine.hidden = false;
+    transLine.replaceChildren(el("span", { class: "typing" }, `🌐 ${t("translating")}`));
+    try {
+      const tr = await translateText(call.lastTutor, (full) => transLine.replaceChildren(document.createTextNode(`🌐 ${full}`)));
+      transLine.replaceChildren(document.createTextNode(`🌐 ${tr}`));
+    } catch (e) {
+      transLine.hidden = true;
+      showError(e);
+    }
+  });
+
+  /* ---------- Déroulé de l'appel ---------- */
+  async function tutorTurn() {
+    if (!call.active) return;
+    setMode("thinking");
+    call.abort = new AbortController();
+    let reply;
+    try {
+      reply = await streamChat(aiConfig(), {
+        system: callSystemPrompt(scenarioId),
+        messages: toPayload(call.turns.slice(-24)),
+        signal: call.abort.signal,
+        onRetry,
+      });
+    } catch (e) {
+      if (e.name !== "AbortError") {
+        showError(e);
+        setMode("paused");
+        call.paused = true;
+        muteBtn.setAttribute("aria-pressed", "true");
+        muteBtn.classList.add("off");
+      }
+      return;
+    }
+    if (!call.active) return;
+    const finished = /\[END\]/i.test(reply);
+    const text = reply.replace(/\[END\]/gi, "").replace(/[*_#]/g, "").trim();
+    call.turns.push({ role: "assistant", content: reply });
+    call.transcript.push({ role: "assistant", content: text });
+    showTutor(text);
+    setMode("speaking");
+    await speakAsync(text);
+    if (!call.active) return;
+    if (finished) {
+      addXP(10);
+      setMode("ended");
+      avatarWrap.classList.add("done");
+      setTimeout(() => end(true), 2200);
+      return;
+    }
+    listenLoop();
+  }
+
+  let silentTries = 0;
+  async function listenLoop() {
+    if (!call.active || call.paused) return;
+    setMode("listening");
+    let said = "";
+    try {
+      said = await listenOnce(null);
+    } catch (e) {
+      if (!call.active) return;
+      handleMicError(e);
+      call.paused = true;
+      muteBtn.setAttribute("aria-pressed", "true");
+      muteBtn.classList.add("off");
+      setMode("paused");
+      return;
+    }
+    if (!call.active || call.paused) return;
+    if (!said) {
+      silentTries += 1;
+      if (silentTries >= 3) {
+        call.paused = true;
+        muteBtn.setAttribute("aria-pressed", "true");
+        muteBtn.classList.add("off");
+        setMode("paused");
+        return;
+      }
+      return listenLoop();
+    }
+    silentTries = 0;
+    showUser(said);
+    call.turns.push({ role: "user", content: said });
+    call.transcript.push({ role: "user", content: said });
+    state.progress.messages += 1;
+    addXP(1);
+    tutorTurn();
+  }
+
+  tutorTurn();
 }
 
 /* =====================================================================
