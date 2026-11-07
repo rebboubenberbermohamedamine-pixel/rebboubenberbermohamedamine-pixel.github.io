@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#4f46e5" />
+  <meta name="description" content="Tuteur IA pour apprendre l'anglais et le français, sans pub ni quota." />
+  <title>Parlio</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon-192.png" alt="" width="28" height="28" />
+      <span>Parlio</span>
+    </div>
+    <div class="lang-switch" role="group" aria-label="Langue apprise">
+      <button type="button" data-target="en" class="pill">🇬🇧 English</button>
+      <button type="button" data-target="fr" class="pill">🇫🇷 Français</button>
+    </div>
+  </header>
+
+  <main id="view" tabindex="-1"></main>
+
+  <nav class="tabbar" aria-label="Navigation principale">
+    <button type="button" data-tab="chat"><span class="ico">💬</span><span data-i18n="tab_chat"></span></button>
+    <button type="button" data-tab="oral"><span class="ico">🎙️</span><span data-i18n="tab_oral"></span></button>
+    <button type="button" data-tab="lessons"><span class="ico">📚</span><span data-i18n="tab_lessons"></span></button>
+    <button type="button" data-tab="progress"><span class="ico">📈</span><span data-i18n="tab_progress"></span></button>
+    <button type="button" data-tab="settings"><span class="ico">⚙️</span><span data-i18n="tab_settings"></span></button>
+  </nav>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
